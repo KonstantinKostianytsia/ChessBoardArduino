@@ -7,7 +7,8 @@
 // Common constants
 #define NUM_CELLS_IN_ROW       8 
 #define NUM_ROWS               8
-#define SEND_BOARD_STATE_DELAY 10000
+#define SEND_BOARD_STATE_DELAY 500
+#define DELAY_BETWEEN_HALL_SENSORS_READING 20
 
 // Parser constants
 #define CHARACTER_TO_SEPARATE_COMMANDS  ';'
@@ -19,21 +20,22 @@
 #define BOARD_STATE_NOTIFICATIONS_CHAR      "7d09ef8c-b14f-4bbb-9d48-4b1c1f7f8044"
 
 // LEDs constants
-int BOARD_ROW_LED_PINS[NUM_ROWS] = {4, 5, -1, -1, -1, -1, -1, -1};
+int BOARD_ROW_LED_PINS[NUM_ROWS] = {16, 17, 5, 18, 19, 21, 22, 13};
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
 #define BRIGHTNESS 250
 
 /// Hall sensors constats
-#define ANALOG_READ_RESOLUTION      10
-#define s0Pin                       26
-#define s1Pin                       27
-#define s2Pin                       14
-#define s3Pin                       12
-#define s4Pin                       -1
-#define s5Pin                       -1
+#define ANALOG_READ_RESOLUTION      6
+#define s0Pin                       25
+#define s1Pin                       26
+#define s2Pin                       27
+#define s3Pin                       14
 
-#define analogPin                   25 /// read only
+#define s0AnalogPin                   33 /// read only
+#define s1AnalogPin                   35 /// read only
+#define s2AnalogPin                   32 /// read only
+#define s3AnalogPin                   34 /// read only
 
 
 // FastLEDs variables
@@ -58,6 +60,7 @@ class BLEServerConnectCallback: public BLEServerCallbacks {
     };
 
     void onDisconnect(BLEServer* pServer) {
+      FastLED.clear();
       digitalWrite(LED_BUILTIN, LOW);
       deviceConnected = false;
     }
@@ -130,9 +133,15 @@ class BLEOnWriteColorCallback: public BLECharacteristicCallbacks {
 
 void setupLeds() {
   pinMode(LED_BUILTIN, OUTPUT);
-
-  FastLED.addLeds<LED_TYPE, 4, COLOR_ORDER>(leds[0], NUM_CELLS_IN_ROW);
-  FastLED.addLeds<LED_TYPE, 5, COLOR_ORDER>(leds[1], NUM_CELLS_IN_ROW);
+  // 16, 17, 5, 18, 19, 21, 22, 13
+  FastLED.addLeds<LED_TYPE, 16, COLOR_ORDER>(leds[0], NUM_CELLS_IN_ROW);
+  FastLED.addLeds<LED_TYPE, 17, COLOR_ORDER>(leds[1], NUM_CELLS_IN_ROW);
+  FastLED.addLeds<LED_TYPE, 5,  COLOR_ORDER>(leds[2], NUM_CELLS_IN_ROW);
+  FastLED.addLeds<LED_TYPE, 18, COLOR_ORDER>(leds[3], NUM_CELLS_IN_ROW);
+  FastLED.addLeds<LED_TYPE, 19, COLOR_ORDER>(leds[4], NUM_CELLS_IN_ROW);
+  FastLED.addLeds<LED_TYPE, 21, COLOR_ORDER>(leds[5], NUM_CELLS_IN_ROW);
+  FastLED.addLeds<LED_TYPE, 22, COLOR_ORDER>(leds[6], NUM_CELLS_IN_ROW);
+  FastLED.addLeds<LED_TYPE, 13, COLOR_ORDER>(leds[7], NUM_CELLS_IN_ROW);
   FastLED.setBrightness(BRIGHTNESS);
 }
 
@@ -187,16 +196,17 @@ void setupHallSensors() {
   pinMode(s1Pin, OUTPUT);
   pinMode(s2Pin, OUTPUT);
   pinMode(s3Pin, OUTPUT);
-  pinMode(s4Pin, OUTPUT);
-  pinMode(s5Pin, OUTPUT);
+
+  pinMode(s0AnalogPin, INPUT);
+  pinMode(s1AnalogPin, INPUT);
+  pinMode(s2AnalogPin, INPUT);
+  pinMode(s3AnalogPin, INPUT);
 
   /// Set initial values
   digitalWrite(s0Pin, LOW);
   digitalWrite(s1Pin, LOW);
   digitalWrite(s2Pin, LOW);
   digitalWrite(s3Pin, LOW);
-  digitalWrite(s4Pin, LOW);
-  digitalWrite(s5Pin, LOW);
 
   analogReadResolution(ANALOG_READ_RESOLUTION);
 }
@@ -210,9 +220,51 @@ void setup() {
 }
 
 void handleHallSensors() {
+  String commandString[4] = {"","","",""};
+  /// To get sensors values are used 4 multiplexor
+  /// 4 multiplexor are connected dirrectly to hall sensors 
+  /// Different analog read pins are used for each multiplexor
+  for (int i = 0; i < 16; i++) {
+    if(i != 0) {
+      for(int j = 0; j < 4; j++) {
+        commandString[j].concat(CHARACTER_TO_SEPARATE_COMMANDS);
+      }
+    }
+    // Set values to controll input of the multiplexor
+    digitalWrite(s0Pin, i & 0x01);
+    digitalWrite(s1Pin, (i >> 1) & 0x01);
+    digitalWrite(s2Pin, (i >> 2) & 0x01);
+    digitalWrite(s3Pin, (i >> 3) & 0x01);
+    // A delay for signal stabilization
+    delay(DELAY_BETWEEN_HALL_SENSORS_READING);
+    // Reading signal value
+    int sensorValues[4] = {analogRead(s0AnalogPin), analogRead(s1AnalogPin),analogRead(s2AnalogPin), analogRead(s3AnalogPin)};
+    byte rowIndex = i / NUM_CELLS_IN_ROW;
+    byte columnIndex = i % NUM_CELLS_IN_ROW;
+    
+    for(int j = 0; j < 4; j++) {
+      commandString[j].concat(j * 2 + rowIndex);
+      commandString[j].concat(CHARACTER_TO_SEPARATE_FIELDS);
+      commandString[j].concat(columnIndex);
+      commandString[j].concat(CHARACTER_TO_SEPARATE_FIELDS);
+      commandString[j].concat(sensorValues[j]);
+    }
+  }
+  String result = commandString[0] + CHARACTER_TO_SEPARATE_COMMANDS + 
+                  commandString[1] + CHARACTER_TO_SEPARATE_COMMANDS + 
+                  commandString[2] + CHARACTER_TO_SEPARATE_COMMANDS + 
+                  commandString[3];
+  Serial.println(result.c_str());
+  pCharacteristicBoardState->setValue(result.c_str());
+  pCharacteristicBoardState->notify();
+}
+
+void testHallSensors() {
   String commandString = "";
-  // for (int i = 0; i < NUM_CELLS_IN_ROW * NUM_ROWS; i++) {
-  for (int i = 0; i < 8; i++) {
+  /// To get sensors values are used 4 multiplexor
+  /// 4 multiplexor are connected dirrectly to hall sensors 
+  /// Different analog read pins are used for each multiplexor
+  for (int i = 0; i < 16; i++) {
     if(i != 0) {
       commandString.concat(CHARACTER_TO_SEPARATE_COMMANDS);
     }
@@ -221,34 +273,35 @@ void handleHallSensors() {
     digitalWrite(s1Pin, (i >> 1) & 0x01);
     digitalWrite(s2Pin, (i >> 2) & 0x01);
     digitalWrite(s3Pin, (i >> 3) & 0x01);
-    // digitalWrite(s4Pin, (i >> 4) & 0x01);
-    // digitalWrite(s5Pin, (i >> 5) & 0x01);
-
     // A delay for signal stabilization
     delay(10);
-
     // Reading signal value
-    int sensorValue = analogRead(analogPin);
-    byte rowIndex = i / NUM_CELLS_IN_ROW;
-    byte columnIndex = i - (rowIndex * NUM_CELLS_IN_ROW);
-    
-    commandString.concat(rowIndex);
-    commandString.concat(CHARACTER_TO_SEPARATE_FIELDS);
-    commandString.concat(columnIndex);
-    commandString.concat(CHARACTER_TO_SEPARATE_FIELDS);
-    commandString.concat(sensorValue);
-  }
-  Serial.println(commandString.c_str());
-  pCharacteristicBoardState->setValue(commandString.c_str());
-  pCharacteristicBoardState->notify();
-}
+    int sensorValue = analogRead(s1AnalogPin);
 
+    int value = sensorValue;
+
+    byte rowIndex = i / NUM_CELLS_IN_ROW;
+    byte columnIndex = i % NUM_CELLS_IN_ROW;
+    
+    byte numOfMultiplexor = 0;
+      commandString.concat(numOfMultiplexor * 2 + rowIndex );
+      commandString.concat(CHARACTER_TO_SEPARATE_FIELDS);
+      commandString.concat(columnIndex);
+      commandString.concat(CHARACTER_TO_SEPARATE_FIELDS);
+      commandString.concat(value);
+  }
+  String result = commandString + CHARACTER_TO_SEPARATE_COMMANDS;
+  Serial.println(result.c_str());
+  // pCharacteristicBoardState->setValue(result.c_str());
+  // pCharacteristicBoardState->notify();
+}
 
 void loop() {
     // notify changed value
     if (deviceConnected) {
         handleHallSensors();
-        delay(SEND_BOARD_STATE_DELAY);
+        // testHallSensors();
+        // delay(SEND_BOARD_STATE_DELAY);
     }
      // disconnecting
     if (!deviceConnected && oldDeviceConnected) {
@@ -262,4 +315,5 @@ void loop() {
         // do stuff here on connecting
         oldDeviceConnected = deviceConnected;
     }
+    delay(500);
 }
