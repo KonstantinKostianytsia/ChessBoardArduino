@@ -13,6 +13,7 @@
 // Parser constants
 #define CHARACTER_TO_SEPARATE_COMMANDS  ';'
 #define CHARACTER_TO_SEPARATE_FIELDS    '_'
+#define CHARACTER_TO_SEPARATE_FLAGS     '%'
 
 // BLE constants
 #define SERVICE_UUID                        "5f47f8ff-fbb4-47d4-ac92-8520ef9fed17"
@@ -52,6 +53,11 @@ BLE2902 *pBLE2902;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 
+void setBoardColors(CRGB color) {
+  for(int i = 0; i < NUM_ROWS; ++i) {
+    fill_solid(leds[i], NUM_CELLS_IN_ROW, color);
+  }
+}
 
 class BLEServerConnectCallback: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -60,10 +66,16 @@ class BLEServerConnectCallback: public BLEServerCallbacks {
     };
 
     void onDisconnect(BLEServer* pServer) {
-      FastLED.clear();
       digitalWrite(LED_BUILTIN, LOW);
       deviceConnected = false;
+      setBoardColors(CRGB::Black);
+      FastLED.show();
     }
+};
+
+struct ProcessedString {
+  std::vector<String> commands;
+  String flags;
 };
 
 class BLEOnWriteColorCallback: public BLECharacteristicCallbacks {
@@ -86,9 +98,6 @@ class BLEOnWriteColorCallback: public BLECharacteristicCallbacks {
       }
     }
     columnIndex = command.substring(currentStartIndex, command.length()).toInt();
-    Serial.println(color);
-    Serial.println(rowIndex);
-    Serial.println(columnIndex);
     color = color.substring(1);
     String prefix = String("0x");
     uint8_t red = strtoul((prefix + color.substring(0,2)).c_str(), NULL, 16);
@@ -100,15 +109,26 @@ class BLEOnWriteColorCallback: public BLECharacteristicCallbacks {
     uint8_t blue = strtoul((prefix + color.substring(4,6)).c_str(), NULL, 16);
     leds[rowIndex][columnIndex].blue = blue;
     FastLED.show();
-    Serial.println("COLOR SUCCESSFULLY CHANGED");
-    Serial.println(red);
-    Serial.println(green);
-    Serial.println(blue);
   }
 
-  std::vector<String> processWriteString(String receivedString) {
+  void processFlags(String flags) {
+    Serial.println(flags);
+
+    for(int i = 0; i < flags.length(); i++) {
+      switch(flags[i])
+      {
+        case 'r':
+          setBoardColors(CRGB::Black);
+          break;
+      }
+    }
+  }
+
+  ProcessedString processWriteString(String receivedString) {
     Serial.println("Received string: " + receivedString);
+    ProcessedString result;
     std::vector<String> commands = std::vector<String>();
+    String flags = "";
     int currentCommandStartIndex = 0;
     for(int i = 0; i < receivedString.length(); i++) {
       if(receivedString[i] == CHARACTER_TO_SEPARATE_COMMANDS) {
@@ -116,15 +136,29 @@ class BLEOnWriteColorCallback: public BLECharacteristicCallbacks {
         currentCommandStartIndex = i + 1;
         continue;
       } 
+      // Flags were found. A new command is added and substring of next index and to the end of the string will be flags
+      if(receivedString[i] == CHARACTER_TO_SEPARATE_FLAGS) {
+        commands.push_back(receivedString.substring(currentCommandStartIndex, i));
+        flags = receivedString.substring(i + 1, receivedString.length());
+        result.flags = flags;
+        result.commands = commands;
+        return result;
+      }
     }
+    // Flags were not found 
     commands.push_back(receivedString.substring(currentCommandStartIndex, receivedString.length()));
-    return commands;
+    result.flags = "";
+    result.commands = commands;
+    return result;
   }
 
   void onWrite(BLECharacteristic *pChar) override { 
     std::string pChar_value_stdstr = pChar->getValue();
     String pChar_value_string = String(pChar_value_stdstr.c_str());
-    std::vector<String> commands = processWriteString(pChar_value_string);
+    auto result = processWriteString(pChar_value_string);
+    std::vector<String> commands = result.commands;
+    String flags = result.flags;
+    processFlags(flags);
     for(auto it = begin(commands); it != end(commands); ++it) {
       processCommand(*it);
     }
